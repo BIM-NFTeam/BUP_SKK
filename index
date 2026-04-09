@@ -128,7 +128,7 @@
 
 <script>
     // --- SETTINGS ---
-    const API_URL = "https://script.google.com/a/macros/skk.jp/s/AKfycbyRGE_svtsjMsxi64vfMaClWcq9ovDe7N7Vsjnxd_wD3TU1jVL85AMHJm2kHKc8q0fn/exec"; 
+    const API_URL = "https://script.google.com/a/macros/skk.jp/s/AKfycbxCCsjtAuIlhGiL7AI_NCVupaN9lLyE5G6EUc_iHYIZARHc6kmJWsI4Z8so1jbTcA9d/exec"; 
     let currentMachine = {}, photoQueue = [], myChart = null, scanStream = null;
     let canvas, ctx, originalImg, editMode = 'pen', activeIdx = null;
 
@@ -375,10 +375,16 @@
             });
             const result = await res.json();
             if(result.success) { 
-                alert("保存完了しました"); 
+                if (result.photoErrors && result.photoErrors.length) {
+                    alert("点検記録は保存しましたが、写真保存で一部エラーがありました。\n" + result.photoErrors.join("\n"));
+                } else {
+                    alert("保存完了しました");
+                }
                 document.getElementById('f-desc').value = "";
                 photoQueue = []; renderGallery();
                 loadHistory(currentMachine.guid);
+            } else {
+                alert(result.error || "保存に失敗しました");
             }
         } catch(e) { alert("通信エラーが発生しました"); }
         setLoading(false);
@@ -420,16 +426,66 @@
     async function startScanner() {
         const container = document.getElementById('scannerContainer');
         const video = document.getElementById('video');
+
+        if (!window.isSecureContext) {
+            alert("このページはセキュアコンテキストではありません。HTTPSで開いてください。");
+            return;
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert("このブラウザはカメラAPI(getUserMedia)に対応していません。");
+            return;
+        }
+
         container.classList.remove('hidden');
         try {
-            scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+            const constraintsList = [
+                { video: { facingMode: { ideal: "environment" } } },
+                { video: { facingMode: "environment" } },
+                { video: true }
+            ];
+
+            let lastError = null;
+            for (const constraints of constraintsList) {
+                try {
+                    scanStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    break;
+                } catch (err) {
+                    lastError = err;
+                }
+            }
+            if (!scanStream) throw lastError || new Error("Camera initialization failed");
+
             video.srcObject = scanStream;
-            video.play();
+            await video.play();
             requestAnimationFrame(tick);
-        } catch (e) { alert("カメラを起動できませんでした。HTTPS接続を確認してください。"); stopScanner(); }
+        } catch (e) {
+            const errName = e && e.name ? e.name : "UnknownError";
+            const errMsg = e && e.message ? e.message : String(e);
+            if (errName === "NotAllowedError") {
+                const manualCode = prompt(
+                    "カメラ権限が拒否されました。\n" +
+                    "GUID/QR文字列を手入力して続行できます。\n\n" +
+                    "入力する場合は下に貼り付けてください:"
+                );
+                if (manualCode && manualCode.trim()) {
+                    stopScanner();
+                    loadMachine(manualCode.trim());
+                    return;
+                }
+            }
+            alert(
+                "カメラを起動できませんでした。\n" +
+                `${errName}: ${errMsg}\n\n` +
+                "ブラウザのカメラ許可、他アプリでのカメラ使用中、デバイス未接続を確認してください。"
+            );
+            stopScanner();
+        }
     }
     function stopScanner() {
         if (scanStream) scanStream.getTracks().forEach(t => t.stop());
+        scanStream = null;
+        const v = document.getElementById('video');
+        if (v) v.srcObject = null;
         document.getElementById('scannerContainer').classList.add('hidden');
     }
     function tick() {
